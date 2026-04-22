@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>AutoMate Premium</title>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
+    <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --cyan: #06b6d4;
+            --safe-bottom: env(safe-area-inset-bottom, 16px);
+            --safe-top: env(safe-area-inset-top, 10px);
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        
+        body, html { 
+            font-family: 'Manrope', sans-serif; background: var(--bg-dark); 
+            overflow: hidden; margin: 0; padding: 0; color: #ffffff; 
+            height: 100dvh; width: 100vw; overscroll-behavior-y: none;
+        }
+
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* КАРТА НА ФОНЕ ВСЕГДА */
+        #map { position: absolute; top: 0; left: 0; width: 100vw; height: 100dvh; z-index: 0; background: var(--bg-dark); }
+        .leaflet-routing-container, .leaflet-control-attribution, .leaflet-control-zoom { display: none !important; }
+        
+        /* Маркеры с премиальным свечением */
+        .custom-marker { background: transparent; border: none; outline: none; }
+        .marker-svg { 
+            display: flex; align-items: center; justify-content: center;
+            filter: drop-shadow(0 0 8px currentColor);
+            transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        .custom-marker:active .marker-svg { transform: scale(0.85); }
+        .pulse-anim svg { animation: pulse 2s infinite alternate; }
+        @keyframes pulse {
+            0% { transform: scale(1); filter: drop-shadow(0 0 5px currentColor); }
+            100% { transform: scale(1.2); filter: drop-shadow(0 0 20px currentColor); }
+        }
+
+        /* Glassmorphism */
+        .glass { background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); }
+        .glass-panel { background: rgba(30, 41, 59, 0.9); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border-top: 1px solid rgba(255,255,255,0.1); }
+
+        /* Bottom Sheet (Шторка карты) */
+        #bottom-sheet { 
+            position: absolute; left: 0; right: 0; bottom: calc(75px + var(--safe-bottom)); 
+            border-radius: 32px 32px 0 0; z-index: 40;
+            height: calc(100dvh - 160px); 
+            will-change: transform;
+            box-shadow: 0 -15px 40px rgba(0,0,0,0.6);
+            display: flex; flex-direction: column;
+        }
+        .sheet-animate { transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .sheet-collapsed { transform: translateY(calc(100% - 90px)); } 
+        .sheet-half { transform: translateY(45%); }
+        .sheet-full { transform: translateY(0); }
+
+        /* Полноэкранные Оверлеи (Чат и Профиль) */
+        .overlay-screen {
+            position: absolute; top: 0; left: 0; right: 0; bottom: calc(75px + var(--safe-bottom));
+            background: var(--bg-dark); z-index: 50;
+            transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+            display: flex; flex-direction: column; opacity: 0; pointer-events: none;
+        }
+        .overlay-screen.active { transform: translateX(0); opacity: 1; pointer-events: auto; }
+
+        /* Нижняя Навигация */
+        .bottom-nav {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            height: calc(75px + var(--safe-bottom));
+            z-index: 1000; display: flex; justify-content: space-around; align-items: center;
+            padding-bottom: var(--safe-bottom);
+        }
+        .nav-btn { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 70px; color: #64748b; transition: all 0.2s; }
+        .nav-btn.active { color: var(--cyan); transform: translateY(-2px); }
+        .nav-btn .icon-bg { padding: 6px 12px; border-radius: 16px; transition: background 0.2s; }
+        .nav-btn.active .icon-bg { background: rgba(6, 182, 212, 0.15); }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <div id="map-ui" class="absolute inset-0 pointer-events-none z-10 transition-opacity duration-300">
+        
+        <div class="absolute top-0 w-full bg-gradient-to-b from-slate-900/95 to-transparent pt-safe pb-8 px-4">
+            <div class="glass flex items-center px-4 py-3.5 rounded-2xl shadow-2xl pointer-events-auto focus-within:border-cyan-400 transition-colors mt-2">
+                <svg class="w-5 h-5 text-gray-400 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                <input type="text" id="search-input" placeholder="Поиск сервисов..." class="bg-transparent border-none outline-none text-white w-full text-base placeholder-gray-500">
+            </div>
+            
+            <div class="flex overflow-x-auto hide-scroll gap-3 mt-4 pointer-events-auto pb-2" id="categories-container">
+                </div>
+        </div>
+
+        <button id="locate-btn" class="absolute bottom-[calc(110px+var(--safe-bottom))] right-4 glass w-14 h-14 rounded-full flex items-center justify-center text-cyan-400 shadow-2xl active:scale-95 transition-transform pointer-events-auto">
+            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+        </button>
+
+        <div id="bottom-sheet" class="glass-panel sheet-animate sheet-half pointer-events-auto">
+            <div id="drag-handle" class="w-full flex justify-center py-4 cursor-grab touch-none">
+                <div class="w-12 h-1.5 bg-gray-500/50 rounded-full"></div>
+            </div>
+            <div class="px-6 pb-4 flex justify-between items-end border-b border-white/5">
+                <div class="flex-1 overflow-hidden pr-2">
+                    <h2 id="sheet-title" class="text-2xl font-extrabold tracking-tight text-white truncate">Рядом с вами</h2>
+                    <p id="sheet-subtitle" class="text-sm text-cyan-400 font-semibold mt-1">Загрузка данных...</p>
+                </div>
+                <button id="cancel-route-btn" class="hidden w-11 h-11 flex-shrink-0 bg-red-500/10 text-red-500 rounded-full items-center justify-center border border-red-500/20 active:bg-red-500/30 transition-colors">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div id="sheet-content" class="flex-1 overflow-y-auto hide-scroll px-5 py-4 space-y-3 pb-6"></div>
+        </div>
+    </div>
+
+    <div id="screen-chat" class="overlay-screen">
+        <div class="p-6 pt-safe border-b border-white/5 flex items-center gap-4 bg-slate-900/50 backdrop-blur-xl shrink-0">
+            <div class="w-12 h-12 rounded-2xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center shadow-lg border border-cyan-500/30">
+                <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+            </div>
+            <div>
+                <h3 class="font-extrabold text-lg text-white">AutoMate Поддержка</h3>
+                <div class="flex items-center gap-1.5"><div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div><p class="text-xs text-gray-400 font-medium">Онлайн</p></div>
+            </div>
+        </div>
+        <div id="chat-messages" class="flex-1 overflow-y-auto hide-scroll p-5 flex flex-col gap-4 bg-slate-900">
+            <div class="self-start bg-slate-800 border border-white/5 px-5 py-3.5 rounded-3xl rounded-tl-sm text-sm text-gray-200 max-w-[85%] leading-relaxed shadow-sm">Здравствуйте! 👋 Чем могу помочь на дороге? Нужно вызвать эвакуатор или найти запчасть?</div>
+        </div>
+        <form id="chat-form" class="p-4 bg-slate-800/80 backdrop-blur-xl border-t border-white/5 flex gap-3 shrink-0">
+            <input type="text" id="chat-input" placeholder="Напишите сообщение..." class="flex-1 bg-slate-900 border border-white/10 rounded-2xl px-5 text-sm outline-none text-white focus:border-cyan-400 transition-colors shadow-inner" autocomplete="off">
+            <button type="submit" class="bg-cyan-500 text-slate-900 w-12 h-12 rounded-2xl flex items-center justify-center active:scale-95 transition-transform shadow-[0_4px_15px_rgba(6,182,212,0.3)] shrink-0">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+            </button>
+        </form>
+    </div>
+
+    <div id="screen-profile" class="overlay-screen overflow-y-auto hide-scroll p-6 pt-safe">
+        <h2 class="text-3xl font-extrabold mb-8 mt-6 text-white tracking-tight">Профиль</h2>
+        
+        <div id="profile-unauth" class="mt-4">
+            <p class="text-gray-400 mb-6 font-medium">Войдите, чтобы сохранять историю маршрутов и получить доступ к Premium функциям.</p>
+            <form id="login-form" class="space-y-4">
+                <input type="text" id="username-input" placeholder="Ваше имя" class="w-full bg-slate-800 border border-white/10 p-5 rounded-2xl outline-none focus:border-cyan-400 text-white transition-colors text-lg" required>
+                <button type="submit" class="w-full bg-cyan-500 text-slate-900 font-extrabold p-5 rounded-2xl text-lg shadow-[0_5px_20px_rgba(6,182,212,0.3)] active:scale-95 transition-transform">АВТОРИЗОВАТЬСЯ</button>
+            </form>
+        </div>
+        
+        <div id="profile-auth" class="hidden space-y-8">
+            <div class="flex items-center gap-5 bg-gradient-to-br from-slate-800 to-slate-800/50 p-6 rounded-3xl border border-white/10 shadow-xl">
+                <div class="w-16 h-16 bg-cyan-500/20 text-cyan-400 rounded-2xl flex items-center justify-center text-3xl font-extrabold border border-cyan-500/30 shadow-inner" id="user-avatar"></div>
+                <div>
+                    <h3 class="text-2xl font-extrabold text-white" id="user-name"></h3>
+                    <div class="flex items-center gap-1.5 mt-1"><div class="w-2 h-2 bg-green-400 rounded-full"></div><p class="text-sm text-gray-400 font-medium">Аккаунт подтвержден</p></div>
+                </div>
+            </div>
+            
+            <div>
+                <h4 class="text-xs text-gray-500 font-bold uppercase tracking-widest mb-4 ml-2">Тарифный план</h4>
+                <div class="space-y-3" id="tiers-container"></div>
+            </div>
+            
+            <button id="logout-btn" class="w-full bg-red-500/10 text-red-500 font-bold p-5 rounded-2xl active:bg-red-500/20 border border-red-500/20 transition-colors mt-4">Выйти из аккаунта</button>
+        </div>
+    </div>
+
+    <nav class="bottom-nav glass-panel">
+        <button class="nav-btn active" data-target="map-ui">
+            <div class="icon-bg"><svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></div>
+            <span class="text-[11px] font-bold tracking-wide">Карта</span>
+        </button>
+        <button class="nav-btn" data-target="screen-chat">
+            <div class="icon-bg"><svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg></div>
+            <span class="text-[11px] font-bold tracking-wide">Чат</span>
+        </button>
+        <button class="nav-btn" data-target="screen-profile">
+            <div class="icon-bg"><svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg></div>
+            <span class="text-[11px] font-bold tracking-wide">Профиль</span>
+        </button>
+    </nav>
+
+<script>
+    // --- ДАННЫЕ И ИКОНКИ ---
+    const App = {
+        state: { userLoc: [41.3111, 69.2797], search: '', cat: 'all', navigating: false },
+        icons: {
+            gas: `<path d="M4 22V10h12v12M4 10V6h16v4M16 12h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2M8 12h4v4H8z"/>`,
+            ev: `<path d="M5 22V6h10v16M15 12h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2M10 17c-2.5-2.5 0-7 0-7s2.5 4.5 0 7zM5 6V4h10v2"/>`,
+            service: `<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>`,
+            wash: `<path d="M6 15s2-2 6-2 6 2 6 2v3H6v-3zM4 18h16M12 3v4M8 4l1 3M16 4l-1 3M5 15l-2-2M19 15l2-2"/>`,
+            tow: `<path d="M3 17h10M3 17v-6h3l2-3h5v9M15 14l4-3 3 2v4h-4M5 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm14 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM13 17l4 2"/>`,
+            camera: `<circle cx="12" cy="12" r="10"/><path d="M12 16v-4l-3-3M8 12h.01M16 12h.01M12 6v2"/>`,
+            parking: `<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 16V8h4a2 2 0 0 1 0 4H9"/>`,
+            accident: `<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4m0 4h.01"/>`,
+            shop: `<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>`,
+            premium: `<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>`
+        },
+        cats: [
+            { id: 'all', name: 'Все', color: '#cbd5e1', icon: `<path d="M4 6h16M4 12h16M4 18h16"/>` },
+            { id: 'gas', name: 'АЗС', color: '#ef4444', icon: 'gas' },
+            { id: 'ev', name: 'Зарядки', color: '#10b981', icon: 'ev' },
+            { id: 'service', name: 'Сервис', color: '#8b5cf6', icon: 'service' },
+            { id: 'wash', name: 'Мойки', color: '#3b82f6', icon: 'wash' },
+            { id: 'shop', name: 'Запчасти', color: '#f97316', icon: 'shop' },
+            { id: 'premium', name: 'Премиум', color: '#f59e0b', icon: 'premium' },
+            { id: 'tow', name: 'Эвакуатор', color: '#fcd34d', icon: 'tow' },
+            { id: 'parking', name: 'Парковки', color: '#94a3b8', icon: 'parking' },
+            { id: 'camera', name: 'Радары', color: '#f43f5e', icon: 'camera', pulse: true },
+            { id: 'accident', name: 'ДТП', color: '#ef4444', icon: 'accident', pulse: true }
+        ],
+        db: [
+            { id: 1, name: 'Avtoritet Severniy', type: 'service', lat: 41.296064, lng: 69.293695, rating: 4.2, distance: '4.5 км', price: 'от 60,000 UZS', img: 'linear-gradient(135deg, #1e3a8a, #3b82f6)' },
+            { id: 2, name: 'Avtoritet Severniy (Мойка)', type: 'wash', lat: 41.295934, lng: 69.293539, rating: 4.0, distance: '4.5 км', price: '100,000 UZS', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 3, name: 'Avtoritet Severniy (Магазин)', type: 'shop', lat: 41.295733, lng: 69.293184, rating: 4.5, distance: '4.6 км', price: 'В наличии', img: 'linear-gradient(135deg, #78350f, #f59e0b)' },
+            { id: 4, name: 'A-Bozor Severniy', type: 'shop', lat: 41.291627, lng: 69.286597, rating: 4.3, distance: '5.0 км', price: 'В наличии', img: 'linear-gradient(135deg, #78350f, #f59e0b)' },
+            { id: 5, name: 'A-Bozor Severniy (СТО)', type: 'service', lat: 41.291627, lng: 69.286597, rating: 3.8, distance: '5.0 км', price: 'от 60,000 UZS', img: 'linear-gradient(135deg, #374151, #1f2937)' },
+            { id: 6, name: 'Avtoritet Oq-Tepa', type: 'service', lat: 41.307288, lng: 69.206552, rating: 4.8, distance: '2.1 км', price: 'По прайсу', img: 'linear-gradient(135deg, #1e3a8a, #3b82f6)' },
+            { id: 7, name: 'Avtoritet Oq-Tepa (Мойка)', type: 'wash', lat: 41.306296, lng: 69.206973, rating: 4.6, distance: '2.1 км', price: 'от 700,000 UZS', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 8, name: 'Avtoritet Lunacharskiy', type: 'service', lat: 41.341097, lng: 69.358939, rating: 4.1, distance: '8.2 км', price: 'По прайсу', img: 'linear-gradient(135deg, #374151, #1f2937)' },
+            { id: 9, name: 'Avtoritet Lunacharskiy (Мойка)', type: 'wash', lat: 41.340780, lng: 69.358625, rating: 4.4, distance: '8.2 км', price: '5,000 UZS', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 10, name: 'A-Bozor Comfort', type: 'shop', lat: 41.304208, lng: 69.318933, rating: 4.6, distance: '3.3 км', price: 'Тюнинг', img: 'linear-gradient(135deg, #78350f, #f59e0b)' },
+            { id: 11, name: 'Abozor Parkent', type: 'service', lat: 41.304347, lng: 69.319563, rating: 3.5, distance: '3.4 км', price: '150,000 UZS', img: 'linear-gradient(135deg, #374151, #1f2937)' },
+            { id: 12, name: 'Abozor Yunusobod', type: 'shop', lat: 41.373308, lng: 69.309917, rating: 4.3, distance: '7.5 км', price: 'АКБ', img: 'linear-gradient(135deg, #78350f, #f59e0b)' },
+            { id: 13, name: 'Abozor Yunusobod (СТО)', type: 'service', lat: 41.373308, lng: 69.309917, rating: 3.7, distance: '7.5 км', price: '300,000 UZS', img: 'linear-gradient(135deg, #374151, #1f2937)' },
+            { id: 14, name: 'Abozor Turkiston EV', type: 'ev', lat: 41.295701, lng: 69.293067, rating: 4.7, distance: '4.6 км', price: 'Диагностика', img: 'linear-gradient(135deg, #065f46, #10b981)' },
+            { id: 15, name: 'Avtoritet Kushbegi', type: 'premium', lat: 41.279640, lng: 69.273752, rating: 4.2, distance: '3.6 км', price: 'от 250,000 UZS', img: 'linear-gradient(135deg, #b45309, #f59e0b)' },
+            { id: 16, name: 'Avtoritet Besharik', type: 'service', lat: 41.283886, lng: 69.340785, rating: 4.4, distance: '6.1 км', price: 'Дизель', img: 'linear-gradient(135deg, #374151, #1f2937)' },
+            { id: 20, name: 'Mustang Gavhar', type: 'gas', lat: 41.253894, lng: 69.204382, rating: 4.1, distance: '8.5 км', price: 'АИ-92, 95', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 21, name: 'Mustang Gavhar (Масло)', type: 'service', lat: 41.253996, lng: 69.204578, rating: 3.9, distance: '8.5 км', price: '60,000 UZS', img: 'linear-gradient(135deg, #374151, #1f2937)' },
+            { id: 22, name: 'Mustang Ashrafi', type: 'gas', lat: 41.278813, lng: 69.323885, rating: 4.3, distance: '5.2 км', price: 'АИ-95, ДТ', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 23, name: 'Mustang Ashrafi (СТО)', type: 'service', lat: 41.278813, lng: 69.323885, rating: 4.0, distance: '5.2 км', price: 'Замена жидкостей', img: 'linear-gradient(135deg, #374151, #1f2937)' },
+            { id: 24, name: 'Mustang Sergeli', type: 'gas', lat: 41.243279, lng: 69.230492, rating: 4.2, distance: '9.1 км', price: 'АИ-92, 95', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 25, name: 'Mustang Sergeli (СТО)', type: 'service', lat: 41.243279, lng: 69.230492, rating: 3.7, distance: '9.1 км', price: 'Шиномонтаж', img: 'linear-gradient(135deg, #374151, #1f2937)' },
+            { id: 26, name: 'Mustang Karasu', type: 'gas', lat: 41.310644, lng: 69.344450, rating: 4.4, distance: '5.5 км', price: 'АИ-100', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 27, name: 'Mustang Kushbegi', type: 'gas', lat: 41.268920, lng: 69.289206, rating: 4.2, distance: '4.8 км', price: 'АИ-92, 95', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 30, name: 'iWash Mirzoulugbek', type: 'wash', lat: 41.352299, lng: 69.354482, rating: 4.4, distance: '7.8 км', price: '5,000 UZS/цикл', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 31, name: 'iWash Uchtepa', type: 'wash', lat: 41.291959, lng: 69.169075, rating: 4.6, distance: '9.5 км', price: 'от 5,000 UZS', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 32, name: 'iWash Yunusobod', type: 'wash', lat: 41.322746, lng: 69.278713, rating: 4.3, distance: '1.5 км', price: '5,000 UZS', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 33, name: 'iWash Yangihayot', type: 'wash', lat: 41.217855, lng: 69.225644, rating: 4.7, distance: '11.5 км', price: 'Комплекс', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 80, name: 'Moyka-DS Chilanzar', type: 'wash', lat: 41.272602, lng: 69.180598, rating: 4.6, distance: '9.2 км', price: '5,000 UZS', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 84, name: 'Moyka-DS Kuyluk', type: 'wash', lat: 41.240287, lng: 69.318196, rating: 4.2, distance: '8.7 км', price: 'Робот от 40к', img: 'linear-gradient(135deg, #831843, #ec4899)' },
+            { id: 40, name: 'Ibr Petroleum', type: 'gas', lat: 41.362486, lng: 69.289438, rating: 3.8, distance: '5.8 км', price: 'АИ-92, 95', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 41, name: 'UNG Petro Аэропорт', type: 'gas', lat: 41.257848, lng: 69.255798, rating: 3.5, distance: '6.3 км', price: 'АИ-92', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 44, name: 'Carvon А.Дониш', type: 'gas', lat: 41.358599, lng: 69.273569, rating: 3.7, distance: '5.3 км', price: 'АИ-95', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 54, name: 'Green Dizel', type: 'gas', lat: 41.382822, lng: 69.290971, rating: 4.4, distance: '8.1 км', price: 'Дизель', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 60, name: 'Lukoil Axangaran', type: 'gas', lat: 41.273580, lng: 69.363001, rating: 4.5, distance: '8.2 км', price: 'АИ-100, 95', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 62, name: 'Lukoil Tashkent City', type: 'gas', lat: 41.329673, lng: 69.225205, rating: 4.6, distance: '4.9 км', price: 'АИ-100', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 70, name: 'TOK BOR Seoul Moon', type: 'ev', lat: 41.301220, lng: 69.247691, rating: 4.8, distance: '2.9 км', price: '2500 UZS/кВт', img: 'linear-gradient(135deg, #065f46, #10b981)' },
+            { id: 71, name: 'TOK BOR Riviera', type: 'ev', lat: 41.339511, lng: 69.254376, rating: 4.7, distance: '3.8 км', price: '2500 UZS/кВт', img: 'linear-gradient(135deg, #065f46, #10b981)' },
+            { id: 74, name: 'TOK BOR Central Park', type: 'ev', lat: 41.307269, lng: 69.295662, rating: 4.9, distance: '1.4 км', price: '2500 UZS/кВт', img: 'linear-gradient(135deg, #065f46, #10b981)' },
+            { id: 93, name: 'Auto-Prestige', type: 'shop', lat: 41.322869, lng: 69.264574, rating: 4.8, distance: '1.8 км', price: 'Автозвук', img: 'linear-gradient(135deg, #78350f, #f59e0b)' },
+            { id: 100, name: 'Brookland Mirabad', type: 'premium', lat: 41.292851, lng: 69.273294, rating: 4.6, distance: '2.1 км', price: 'Детейлинг', img: 'linear-gradient(135deg, #b45309, #f59e0b)' },
+            { id: 102, name: 'Black Star Mirabad', type: 'premium', lat: 41.290755, lng: 69.272713, rating: 4.8, distance: '2.3 км', price: 'Керамика', img: 'linear-gradient(135deg, #b45309, #f59e0b)' },
+            { id: 201, name: 'Радар 60 км/ч', type: 'camera', lat: 41.3115, lng: 69.2800, rating: null, distance: '0.5 км', price: 'Контроль', img: 'linear-gradient(135deg, #7f1d1d, #ef4444)' },
+            { id: 301, name: 'City Parking', type: 'parking', lat: 41.3130, lng: 69.2780, rating: 4.1, distance: '0.6 км', price: '5,000 UZS/час', img: 'linear-gradient(135deg, #334155, #64748b)' },
+            { id: 401, name: 'Эвакуатор 24/7', type: 'tow', lat: 41.3150, lng: 69.2820, rating: 4.9, distance: '0.8 км', price: 'от 150,000 UZS', img: 'linear-gradient(135deg, #854d0e, #fcd34d)' },
+            { id: 501, name: 'Авария', type: 'accident', lat: 41.3090, lng: 69.2710, rating: null, distance: '1.2 км', price: 'Пробка', img: 'linear-gradient(135deg, #7f1d1d, #b91c1c)' }
+        ]
+    };
+
+    // --- TG Web App Init ---
+    if (window.Telegram && window.Telegram.WebApp) {
+        Telegram.WebApp.expand();
+        Telegram.WebApp.setHeaderColor('#0f172a');
+    }
+
+    // --- НАВИГАЦИЯ ---
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.overlay-screen').forEach(s => s.classList.remove('active'));
+            document.getElementById('map-ui').style.opacity = '0';
+            document.getElementById('map-ui').style.pointerEvents = 'none';
+            
+            btn.classList.add('active');
+            const target = btn.dataset.target;
+            
+            if(target === 'map-ui') {
+                document.getElementById('map-ui').style.opacity = '1';
+                document.getElementById('map-ui').style.pointerEvents = 'auto';
+                if(window.MapCore) window.MapCore.invalidateSize();
+            } else {
+                document.getElementById(target).classList.add('active');
+            }
+        });
+    });
+
+    // --- КАРТА (LEAFLET + CARTODB DARK) ---
+    window.MapCore = L.map('map', { zoomControl: false, tap: false }).setView(App.state.userLoc, 13);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(window.MapCore);
+
+    window.MapCore.on('click', () => { UI.setSheet('collapsed'); document.getElementById('search-input').blur(); });
+
+    let userMarker = null;
+    function locateUser() {
+        if ("geolocation" in navigator) {
+            navigator.geolocation.getCurrentPosition(pos => {
+                App.state.userLoc = [pos.coords.latitude, pos.coords.longitude];
+                window.MapCore.flyTo(App.state.userLoc, 14, { duration: 1.5 });
+                if(userMarker) window.MapCore.removeLayer(userMarker);
+                userMarker = L.circleMarker(App.state.userLoc, { radius: 8, color: '#fff', fillColor: '#06b6d4', fillOpacity: 1, weight: 3 }).addTo(window.MapCore);
+            });
+        }
+    }
+    document.getElementById('locate-btn').addEventListener('click', locateUser);
+    setTimeout(locateUser, 500);
+
+    // --- РЕНДЕР КАТЕГОРИЙ И МАРКЕРОВ ---
+    const catContainer = document.getElementById('categories-container');
+    App.cats.forEach(cat => {
+        const btn = document.createElement('div');
+        btn.className = `flex flex-col items-center gap-1.5 flex-shrink-0 cursor-pointer active:scale-95 transition-all p-2 rounded-2xl border border-transparent ${cat.id === 'all' ? 'bg-cyan-500/10 border-cyan-500/30' : ''}`;
+        const svgContent = cat.id === 'all' ? cat.icon : App.icons[cat.icon];
+        
+        btn.innerHTML = `
+            <div class="w-14 h-14 rounded-2xl flex items-center justify-center glass shadow-md" style="color:${cat.color}">
+                <svg width="26" height="26" fill="none" stroke="currentColor" stroke-width="2">${svgContent}</svg>
+            </div>
+            <span class="text-[11px] font-bold text-gray-300 tracking-wide">${cat.name}</span>
+        `;
+        
+        btn.onclick = () => {
+            document.querySelectorAll('#categories-container > div').forEach(d => d.classList.remove('bg-cyan-500/10', 'border-cyan-500/30'));
+            btn.classList.add('bg-cyan-500/10', 'border-cyan-500/30');
+            App.state.cat = cat.id;
+            renderData();
+            UI.setSheet('half');
+        };
+        catContainer.appendChild(btn);
+    });
+
+    let currentMarkers = [];
+    function renderData() {
+        currentMarkers.forEach(m => window.MapCore.removeLayer(m));
+        currentMarkers = [];
+        const sheetContent = document.getElementById('sheet-content');
+        sheetContent.innerHTML = '';
+
+        const filtered = App.db.filter(p => {
+            const mCat = App.state.cat === 'all' || p.type === App.state.cat;
+            const mSearch = p.name.toLowerCase().includes(App.state.search) || p.type.toLowerCase().includes(App.state.search);
+            return mCat && mSearch;
+        });
+
+        document.getElementById('sheet-subtitle').innerText = `Найдено объектов: ${filtered.length}`;
+        if(filtered.length === 0) {
+            sheetContent.innerHTML = `<div class="text-center text-gray-500 py-10 font-medium">Ничего не найдено</div>`; return;
+        }
+
+        filtered.forEach(place => {
+            const cat = App.cats.find(c => c.id === place.type);
+            
+            // Чистые маркеры (Glow effect)
+            const iconHtml = `
+                <div class="marker-svg ${cat.pulse ? 'pulse-anim' : ''}" style="color:${cat.color}">
+                    <svg width="34" height="34" fill="none" stroke="currentColor" stroke-width="2.5">${App.icons[cat.icon]}</svg>
+                </div>`;
+            const divIcon = L.divIcon({ html: iconHtml, className: 'custom-marker', iconSize: [34, 34], iconAnchor: [17, 17] });
+            const marker = L.marker([place.lat, place.lng], { icon: divIcon }).addTo(window.MapCore);
+            
+            marker.on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                window.MapCore.flyTo([place.lat - 0.005, place.lng], 15, { duration: 0.5 });
+                UI.showPlace(place, cat);
+            });
+            currentMarkers.push(marker);
+
+            // Карточки объектов
+            const card = document.createElement('div');
+            card.className = "bg-slate-800/60 border border-white/5 rounded-3xl p-3.5 flex gap-4 active:scale-[0.98] transition-transform cursor-pointer shadow-sm";
+            card.innerHTML = `
+                <div class="w-20 h-20 rounded-2xl flex-shrink-0 shadow-inner bg-cover bg-center" style="background-image: ${place.img}"></div>
+                <div class="flex-1 flex flex-col justify-center py-1">
+                    <h3 class="font-extrabold text-white text-base leading-tight mb-2">${place.name}</h3>
+                    <div class="flex justify-between items-center text-xs text-gray-400">
+                        <div class="flex items-center gap-2">${place.rating ? `<span class="text-yellow-400 font-bold text-sm">★ ${place.rating}</span>` : ''} <span class="font-medium">${place.distance}</span></div>
+                        <span class="text-white bg-slate-900 px-2.5 py-1.5 rounded-xl font-bold border border-white/5">${place.price}</span>
+                    </div>
+                </div>
+            `;
+            card.onclick = () => { window.MapCore.flyTo([place.lat - 0.005, place.lng], 15); UI.showPlace(place, cat); };
+            sheetContent.appendChild(card);
+        });
+    }
+
+    // --- 6. МАРШРУТИЗАТОР (КНОПКА ПОЕХАЛИ РАБОТАЕТ) ---
+    let routingControl = null;
+    window.buildRoute = function(lat, lng, name) {
+        if(routingControl) window.MapCore.removeControl(routingControl);
+        App.state.navigating = true;
+        UI.setSheet('collapsed');
+        document.getElementById('sheet-content').innerHTML = `<div class="flex justify-center py-10"><div class="w-10 h-10 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin"></div></div>`;
+
+        routingControl = L.Routing.control({
+            waypoints: [L.latLng(App.state.userLoc[0], App.state.userLoc[1]), L.latLng(lat, lng)],
+            lineOptions: { styles: [{ color: '#06b6d4', weight: 6, opacity: 0.9, shadowColor: '#000', shadowBlur: 10 }] },
+            createMarker: () => null, show: false, fitSelectedRoutes: true
+        }).addTo(window.MapCore);
+
+        routingControl.on('routesfound', function(e) {
+            const r = e.routes[0];
+            document.getElementById('sheet-title').innerText = `Маршрут: ${name}`;
+            document.getElementById('sheet-subtitle').innerText = "Готово к навигации";
+            document.getElementById('cancel-route-btn').classList.replace('hidden', 'flex');
+            
+            document.getElementById('sheet-content').innerHTML = `
+                <div class="bg-cyan-500/10 border border-cyan-500/20 p-6 rounded-3xl flex justify-between items-center mb-5 shadow-inner">
+                    <div><p class="text-xs text-cyan-400 font-extrabold uppercase tracking-widest mb-1">Время</p><p class="text-4xl font-black text-white">${Math.round(r.summary.totalTime/60)} <span class="text-lg text-gray-400 font-bold">мин</span></p></div>
+                    <div class="text-right"><p class="text-xs text-gray-500 font-extrabold uppercase tracking-widest mb-1">Дистанция</p><p class="text-2xl font-bold text-white">${(r.summary.totalDistance/1000).toFixed(1)} км</p></div>
+                </div>
+                <button id="start-nav-btn" class="w-full bg-cyan-500 text-slate-900 font-extrabold py-5 rounded-2xl text-xl shadow-[0_5px_25px_rgba(6,182,212,0.3)] active:scale-95 transition-transform">🚀 ПОЕХАЛИ</button>
+            `;
+            UI.setSheet('half');
+
+            // РЕЖИМ НАВИГАТОРА (Работает!)
+            document.getElementById('start-nav-btn').onclick = () => {
+                UI.setSheet('collapsed');
+                // Зум на пользователя, как в навигаторе
+                window.MapCore.flyTo(App.state.userLoc, 17, { animate: true, duration: 1.5 });
+                if (window.Telegram && window.Telegram.WebApp) window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+            };
+        });
+    }
+
+    document.getElementById('cancel-route-btn').addEventListener('click', () => {
+        if(routingControl) window.MapCore.removeControl(routingControl);
+        App.state.navigating = false;
+        document.getElementById('cancel-route-btn').classList.replace('flex', 'hidden');
+        document.getElementById('sheet-title').innerText = 'Рядом с вами';
+        renderData(); UI.setSheet('half');
+    });
+
+    // --- 7. UX (DRAG ШТОРКИ И DEBOUNCE ПОИСК) ---
+    const UI = {
+        sheetState: 'half',
+        setSheet: function(s) {
+            this.sheetState = s;
+            const el = document.getElementById('bottom-sheet');
+            el.classList.add('sheet-animate');
+            if(s==='full') el.style.transform = `translateY(0)`;
+            else if(s==='half') el.style.transform = `translateY(45%)`;
+            else el.style.transform = `translateY(calc(100% - 90px))`;
+        },
+        showPlace: function(p, c) {
+            document.getElementById('sheet-title').innerText = p.name;
+            document.getElementById('sheet-subtitle').innerText = c.name;
+            document.getElementById('sheet-content').innerHTML = `
+                <div class="w-full h-48 rounded-3xl shadow-inner mb-5 bg-cover bg-center border border-white/5" style="background-image: ${p.img}"></div>
+                <div class="flex justify-between items-center bg-slate-800 p-5 rounded-2xl mb-5 border border-white/5 shadow-md">
+                    <div class="flex items-center gap-2">${p.rating ? `<span class="text-yellow-400 font-extrabold text-lg">★ ${p.rating}</span>` : ''} <span class="text-gray-400 text-sm font-semibold">${p.distance}</span></div>
+                    <span class="text-white font-extrabold text-xl">${p.price}</span>
+                </div>
+                <button onclick="buildRoute(${p.lat}, ${p.lng}, '${p.name}')" class="w-full bg-cyan-500 text-slate-900 font-extrabold py-5 rounded-2xl text-lg shadow-[0_5px_20px_rgba(6,182,212,0.3)] active:scale-95 transition-transform mb-3">ПОСТРОИТЬ МАРШРУТ</button>
+                <button onclick="document.getElementById('sheet-title').innerText='Рядом с вами'; renderData();" class="w-full text-center py-4 text-cyan-400 font-bold bg-white/5 rounded-2xl active:bg-white/10 transition-colors">Вернуться к списку</button>
+            `;
+            this.setSheet('half');
+        }
+    };
+
+    let startY = 0, currentY = 0, dragging = false;
+    const drag = document.getElementById('drag-handle'), sheet = document.getElementById('bottom-sheet');
+    
+    drag.addEventListener('touchstart', e => { startY = e.touches[0].clientY; dragging = true; sheet.classList.remove('sheet-animate'); }, {passive:true});
+    drag.addEventListener('touchmove', e => {
+        if(!dragging) return;
+        let deltaY = e.touches[0].clientY - startY;
+        let base = UI.sheetState === 'full' ? 0 : UI.sheetState === 'half' ? window.innerHeight * 0.45 : window.innerHeight - 150;
+        let newY = base + deltaY; if(newY < 0) newY = 0;
+        sheet.style.transform = `translateY(${newY}px)`;
+    }, {passive:true});
+    drag.addEventListener('touchend', e => {
+        if(!dragging) return; dragging = false;
+        sheet.classList.add('sheet-animate'); sheet.style.transform = '';
+        let deltaY = e.changedTouches[0].clientY - startY;
+        if(deltaY > 50) UI.setSheet(UI.sheetState === 'full' ? 'half' : 'collapsed');
+        else if(deltaY < -50) UI.setSheet(UI.sheetState === 'collapsed' ? 'half' : 'full');
+        else UI.setSheet(UI.sheetState);
+    });
+
+    let sTimer;
+    document.getElementById('search-input').addEventListener('input', e => {
+        clearTimeout(sTimer);
+        sTimer = setTimeout(() => { App.state.search = e.target.value.toLowerCase().trim(); renderData(); UI.setSheet('half'); }, 300);
+    });
+
+    // --- 8. ЧАТ БОТ (POST ЗАПРОС) ---
+    document.getElementById('chat-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const input = document.getElementById('chat-input'), msgBox = document.getElementById('chat-messages');
+        if(!input.value.trim()) return;
+        
+        msgBox.innerHTML += `<div class="self-end bg-cyan-500 text-slate-900 font-bold px-5 py-3.5 rounded-3xl rounded-br-sm text-sm max-w-[85%] shadow-md">${input.value}</div>`;
+        const text = input.value; input.value = ''; msgBox.scrollTop = msgBox.scrollHeight;
+
+        try {
+            await fetch(`https://api.telegram.org/bot8616031797:AAFqnPtCI5huuUYaDycg5gLCfILh6PS7sT0/sendMessage?chat_id=488345626&text=${encodeURIComponent('🌐 AutoMate App: \n' + text)}`);
+            setTimeout(() => { msgBox.innerHTML += `<div class="self-start bg-slate-800 border border-white/5 px-5 py-3.5 rounded-3xl rounded-tl-sm text-sm text-white max-w-[85%] shadow-sm">Служба спасения получила координаты. Ожидайте.</div>`; msgBox.scrollTop = msgBox.scrollHeight; }, 600);
+        } catch(e){}
+    });
+
+    // --- 9. ПРОФИЛЬ ---
+    function initProfile() {
+        const user = JSON.parse(localStorage.getItem('automate_user'));
+        if(user) {
+            document.getElementById('profile-unauth').classList.add('hidden');
+            document.getElementById('profile-auth').classList.remove('hidden');
+            document.getElementById('user-name').innerText = user.name;
+            document.getElementById('user-avatar').innerText = user.name[0].toUpperCase();
+            
+            document.getElementById('tiers-container').innerHTML = ['free', 'pro', 'premium'].map(t => `
+                <div class="p-5 rounded-2xl border ${user.tier === t ? 'border-cyan-500 bg-cyan-500/10' : 'border-white/5 bg-slate-800'} flex justify-between items-center transition-colors">
+                    <span class="font-extrabold text-lg ${t === 'free' ? 'text-gray-400' : t === 'pro' ? 'text-cyan-400' : 'text-yellow-500'}">${t === 'free' ? 'Базовый' : t === 'pro' ? 'PRO' : 'Premium'}</span>
+                    <button onclick="setTier('${t}')" class="px-4 py-2 text-xs font-bold rounded-xl ${user.tier === t ? 'bg-cyan-500 text-slate-900' : 'bg-white/5 text-gray-400 active:scale-95'}">${user.tier === t ? 'Текущий' : 'Выбрать'}</button>
+                </div>
+            `).join('');
+        } else {
+            document.getElementById('profile-unauth').classList.remove('hidden');
+            document.getElementById('profile-auth').classList.add('hidden');
+        }
+    }
+    
+    document.getElementById('login-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        localStorage.setItem('automate_user', JSON.stringify({ name: document.getElementById('username-input').value, tier: 'free' }));
+        initProfile();
+    });
+    
+    document.getElementById('logout-btn').addEventListener('click', () => { localStorage.removeItem('automate_user'); initProfile(); });
+    window.setTier = (t) => { const u = JSON.parse(localStorage.getItem('automate_user')); u.tier = t; localStorage.setItem('automate_user', JSON.stringify(u)); initProfile(); };
+
+    // СТАРТ
+    renderData();
+    initProfile();
+</script>
+</body>
+</html>
